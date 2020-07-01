@@ -22,19 +22,6 @@ Typically:
 
     swapwin [[option] <PID>] | [[option] <FILE|SWP>]
 
-<table>
-	<tr>
-		<th>command</th>
-		<th colspan="4">locate by</th>
-	</tr>
-	<tr>
-		<td> <code>swapwin j .some_file.c.swp</code> </td>
-		<td></td>
-		<td>swap</td>
-		<td>pid</td>
-		<td>window</td>
-	</tr>
-</table>
 
 | command |  | | | |
 | --- | ---: | ---: | ---: | ---: |
