@@ -1,0 +1,380 @@
+#!/bin/bash
+# ___________________________________________________________________________________
+#
+#      _|_|_|  _|          _|    _|_|    _|_|_|    _|          _|  _|_|_|  _|      _|
+#    _|        _|          _|  _|    _|  _|    _|  _|          _|    _|    _|_|    _|
+#      _|_|    _|    _|    _|  _|_|_|_|  _|_|_|    _|    _|    _|    _|    _|  _|  _|
+#          _|    _|  _|  _|    _|    _|  _|          _|  _|  _|      _|    _|    _|_|
+#    _|_|_|        _|  _|      _|    _|  _|            _|  _|      _|_|_|  _|      _|
+#
+#    v.0.2.0
+# ___________________________________________________________________________________
+#
+# Oh, no, a swap file and I have 36 VIM's open ... help
+#
+# OK. I'll try to find and raise.
+#
+
+# DEPENDS:
+#   lsof || xxd
+#   ps
+#   wmctrl
+#   awk
+#   xwininfo (Optional for info)
+# TODO: Use this as an alternative?
+#   xdotool search --pid
+
+# lsof is too slow :P, takes nearly a second.
+# default xxd / swp parsing
+declare -i use_lsof=0
+
+declare -i debug=1
+declare -r ifs="$IFS"
+
+declare wid=
+declare -A wids=()
+declare -a wss=()
+declare -i ws=0
+opt=j
+
+# Current Workspace
+declare -r ws_cur=$(wmctrl -d | awk '$2 == "*"{printf "%d", $1; exit} ')
+
+# Debugger
+ts()
+{
+	printf "++ %5s %s\n" "$1" "$(date +"%T.%N")" >&2
+}
+# Usage
+usage()
+{
+    printf "\nUsage: %s [[opt] <PID>] | [[opt] <FILE|SWP>]\n" "${0/*\//}"
+    printf "\n\033[1mFind VIM window holding swap file\033[0m\n\n"
+    printf "OPTIONS:\n"
+    printf "   j   : Jump to window. (Default)\n"
+    printf "   g   : Get window.  (E.g. from other workspace.)\n"
+    printf "   p   : Only print.  (With some extra info.)\n"
+    printf "   L   : Use lsof.    (Default xxd + /proc/)\n"
+    printf "   s   : Alias for j. (switch)\n"
+    printf "   i   : Alias for p. (information)\n"
+    printf "   h   : This help.\n"
+    printf "\n"
+    printf "  <PID>: Process ID.\n"
+    printf "  <SWP>: Read PID from Vim swap file. (Using xxd or lsof)\n"
+    printf " <FILE>: Try to locate swap from file-name and work from there.\n"
+    if (($#)); then
+        printf "\nERR: Unknown option %s\n" "$1"
+    fi
+}
+# Check if PID is a (G)Vim process
+check_vim_pid()
+{
+    local comm=
+    if ! [[ "$1" =~ ^[0-9]+$ ]];then
+        print_err "ERR: Some weird thing has happened (P: $1).\n"
+        exit 1
+    fi
+    if ! comm="$(ps -p $1 -o comm=)"; then
+	    print_err "ERR: Can PID by ps find not\n"
+    fi
+    [[ "$comm" =~ ^g?vim$ ]] && return 0 || return 1
+}
+# WindowID from PID using wmctrl
+get_wid_by_pid() {
+	wid=
+	ws=0
+	read -r wid ws <<<$(\
+		wmctrl -l -p | \
+		awk -v p="$1" '
+			$3 == p {print $1,"\t",$2}')
+}
+# Create array of WindowID's that match file-name, $wids.
+# Workspace numbers are saved in $wss.
+get_wids_by_title() {
+	local wid=
+	local ws=
+	local -r fn=$1
+	local -r n=$(printf "%s" "$fn" | sed -e 's/[\/&]/\\&/g')
+
+	# Use Assoc. to eliminate dupes
+	while IFS=$'\t' read -r wid ws; do
+		if ! [[ -z $wid ]]; then
+			wids[$wid]=$ws
+		fi
+	done <<<$(\
+		wmctrl -l -p | \
+		awk -v t="$n" '
+			index($0, t){printf "%s\t%d\n", $1, $2}')
+}
+# alt: lsof
+# Loop open files by Vim PID and create a list of
+# WindowID's and workspace numbers.
+build_wid_list_lsof()
+{
+	local f dn bn
+	IFS=$'\n'
+	for f in $( \
+		lsof -a -p $pid -d 0-1000 -w -F'n' / | \
+		awk 'substr($1,1,1) == "n" {print substr($0,2)}' \
+		); do
+		dn=$(dirname "$f")
+		bn=$(basename "$f")
+		bn=${bn%.sw?}
+		bn=${bn#.}
+		f="$dn/$bn"
+		get_wids_by_title "$bn"
+	done
+	IFS="$ifs"
+}
+# alt: proc
+# Loop descriptors in /proc/ fd and create a list of
+# WindowID's and workspace numbers.
+build_wid_list()
+{
+	local f dn bn
+	IFS=$'\n'
+	for f in $( \
+		find /proc/$pid/fd/ -lname "*.sw*" -printf "%l\n"
+		); do
+		dn=$(dirname "$f")
+		bn=$(basename "$f")
+		bn=${bn%.sw?}
+		bn=${bn#.}
+		f="$dn/$bn"
+		get_wids_by_title "$bn"
+	done
+	IFS="$ifs"
+}
+# If more then 1 window, print a list and ask.
+propose_wid_list()
+{
+	local n=0
+	local w
+	local -a keys=( ${!wids[@]} )
+	if [[ "${#wids[@]}" -gt 1 ]]; then
+		print_bold "\nWhoopsie. Foune more then one\n\n"
+		printf "WID LIST (%d):\n" "${#wids[@]}"
+		local -i i=1
+		for w in ${keys[@]}; do
+			printf "%3d: %s " $i $w
+			xprop -id $w WM_NAME
+			((++i))
+		done
+		printf "\n"
+		read -erp "Enter your lucky number (empty to abort): " n
+		! [[ $n =~ ^[0-9]+$ ]] && return 1
+		(( --n ))
+	fi
+	k=${keys[$n]}
+	fetch_window ${wids[$k]} $k
+}
+# Use wmctrl to get window, jump to workspace etc.
+# If opt is p only print information.
+fetch_window()
+{
+	local ws="$1"
+	local wsp=$((ws + 1))
+	local wid="$2"
+	printf "\n"
+	case "$opt" in
+	j|s|-j|-s)
+		if [[ "$ws" != "$ws_cur" ]]; then
+			printf "Swithching to workspace %d.\n" "$wsp"
+		fi
+		printf "Raising window %s with PID %d.\n" \
+		"$wid" "$pid"
+		wmctrl -ia "$wid"
+		;;
+	g|-g)
+		if [[ "$ws" != "$ws_cur" ]]; then
+			printf "Getting window %s by PID %d from workspace %d.\n" \
+			"$wid" "$pid" "$wsp"
+		else
+			printf "Raising window %s with PID %d.\n" \
+			"$wid" "$pid"
+		fi
+		wmctrl -iR "$wid"
+		;;
+	i|p|-i|-p)
+		local ws_same=""
+		[[ "$ws" == "$ws_cur" ]] && ws_same=", this one,"
+
+		printf "Window is on workspace %d%s having window ID %s by PID %d.\n" \
+		"$wsp" "$ws_same" "$wid" "$pid"
+		xwininfo -id "$wid"
+		xprop -id "$wid"
+		;;
+	esac
+}
+# Try to get swap file from regular file.
+# If user has swap file saved in separate directory we are lost.
+fn_swp=
+get_swp_file()
+{
+	local fn
+	local -a s=()
+	local f=${1##*/}
+	local d=${1%/*}
+
+	[[ "$d" = "$f" ]] && d="."
+	shopt -s nullglob
+	for fn in "$d/.$f.sw"*; do
+		s+=("$fn")
+	done
+	if [[ "${#s[@]}" -gt 1 ]]; then
+		print_err "NOTE: More then one swap file found:\n"
+		printf " %s\n" "${s[@]}" >&2
+		printf "\033[1;31mI am using the first one.\033[0m\n" >&2
+	fi
+	fn_swp="${s[0]}"
+}
+# First two bytes should be b0, bc or bC
+# Or in hex 0x6230, 0x6263 or 0x6243
+check_b0()
+{
+	local b01="${1:0:2}"
+	local b02="${1:2:2}"
+
+	if [[ $b01 != '62' ]] ||
+		([[ "$b02" != '30' && "$b02" != '63' && "$b02" != '43' ]]); then
+		return 1
+	fi
+	return 0
+}
+# Read PID from swap file.
+# Se notes below for information.
+fn_main=""
+fn_byswp=""
+pid_from_swp()
+{
+    local swp="$1"
+
+    if ! [[ -r "$swp" ]]; then
+        print_err "ERR: Not able to read $swp.\n"
+        exit 2
+    fi
+
+    # Read b0 ID
+    local b0_id="$(xxd -l 2 -p "$swp")"
+    if ! check_b0 "$b0_id"; then
+        print_err "ERR: Bad b0 ID in file (Not Vim-swap?): %s\n" "$b0_id"
+        exit 1
+    fi
+    # Read PID from .swp file
+    local -a opid=($(xxd -s 24 -l 4 -p -c 1 "$swp"))
+    # Read int magic from .swp file
+    local magic=$(xxd -s 1008 -l 8 -p "$swp")
+
+    if [[ "${magic:0:8}" == "33323130" ]]; then
+        # Intel (LittleEndian)
+        pid=$(printf "%d" "0x${opid[3]}${opid[2]}${opid[1]}${opid[0]}")
+    elif [[ "${magic:0:8}" == "30313233" ]] ||
+        [[ "${magic:8:8}" == "30313233" ]]; then
+        # Motorola (BigEndian)
+        pid=$(printf "%d" "0x${opid[0]}${opid[1]}${opid[2]}${opid[3]}")
+    else
+        print_err "ERR: Unknown byteroder: %s\n" "$magic"
+        exit 1
+    fi
+    # Read file name
+    fn_byswp="$(xxd -s 108 -l 800 -ps "$swp" | xxd -r -p | tr -d '\0')"
+    # Could do an extra check here, but would need to expand ~user/ etc.
+    #! [[ -z "$fn_main" ]] && ! [[ $fn_byswp -ef $fn_main ]]
+}
+print_err()
+{
+	local p=$1
+	shift
+	printf "\033[1;31m$p\033[0m" "$@" >&2
+}
+print_bold()
+{
+	local p=$1
+	shift
+	printf "\033[1m$p\033[0m" "$@" >&2
+}
+# Loop args
+[[ $# == 0 ]] && usage && exit 1
+mode=""
+while ! [[ -z "$1" ]]; do
+	if [[ "$1" =~ ^[0-9]+$ ]]; then
+		pid=$1
+		mode="PID"
+	else
+		[[ "${1:0:1}" == "-" ]] && op=${1:1} || op=$1
+		case "$op" in
+		d)
+			debug=1
+			;;
+		h|-help|'?')
+			usage; exit 1
+			;;
+		-lsof|L)
+			use_lsof=1
+			;;
+		j|s|g|p|i)
+			opt=$op
+			;;
+		*)
+			if [[ "$1" =~ \.[^/]*.sw.$ ]]; then
+				mode="SWAP"
+				fn_swp="$1"
+			else
+				mode="FILE"
+				fn_main="$1"
+				printf "\033[1mSwap for : \`\033[33m%s\033[0m' find\n" "$fn_main" >&2
+				get_swp_file "$fn_main"
+			fi
+			if [[ -z "$fn_swp" ]]; then
+				print_err "\nSwap-file located not can be\n"
+				exit 2
+			fi
+			if ! [[ -e "$fn_swp" ]]; then
+				print_err "\nStat \`%s' impossible is\n" "$fn_swp"
+				exit 2
+			fi
+			if (( use_lsof )); then
+				pid=$(lsof -wt "$fn_swp")
+			else
+				pid_from_swp "$fn_swp"
+			fi
+			;;
+		esac
+	fi
+	shift
+done
+
+declare -r fn_swp="$fn_swp"
+declare -r pid="$pid"
+
+printf "\n" >&2
+printf "\033[1mPID      :\033[0m %d\n" "$pid" >&2
+if ! [[ -z "$fn_swp" ]];then
+	printf "\033[1mSwap-file:\033[0m \`%s' we use\n" "$fn_swp" >&2
+	printf "\033[1mSwap-own :\033[0m \`%s' it say\n" "$fn_byswp" >&2
+fi
+
+if ! check_vim_pid $pid; then
+	if [[ $mode == "PID" ]]; then
+		print_err "\nPID does not seem to be a vim-pid\n"
+	else
+		print_err "\nPID %d, holding swap-file, is not a Vim process?\n" "$pid"
+	fi
+	ps ww $pid
+	exit 1
+fi
+
+get_wid_by_pid "$pid"
+
+if ! [[ -z "$wid" ]]; then
+	fetch_window "$ws" "$wid" >&2
+else
+	if (( use_lsof )); then
+		build_wid_list_lsof
+	else
+		build_wid_list
+	fi
+	propose_wid_list >&2
+fi
+
+printf "\nBye!\n\n"
