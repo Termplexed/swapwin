@@ -17,8 +17,6 @@ more error-prone.
 
 ## Usage
 
-Typically: 
-
 
     swapwin [[option] <PID>] | [[option] <FILE|SWP>]
 
