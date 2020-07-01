@@ -105,3 +105,15 @@ As above but without looking at swap file.
 </section>
 
 <sub>As some of the messages in the script show, this is not the most serious project.</sub>
+
+## Todo
+
+Could be smarter on filtering duplicate windows. As of now it list all sessions that have
+a file matching with *one* of the files in the window we are after. So if you are after
+
+* foo.txt
+
+And the window holding it also have *bar.txt* and *baz.txt*, it matches all sessions that have
+files that are either *foo.txt*, *bar.txt* or *baz.txt*.
+
+Easy fix I believe, but have not been big an issue.
