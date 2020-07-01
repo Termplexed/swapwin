@@ -12,7 +12,7 @@ more error-prone.
 
 | Required | Either or | Optional |
 | -- | -- | -- |
-| bash, wmctrl, awk, ps | lsof \|\| xxd | xwininfo, luck |
+| bash, wmctrl, awk, ps, find | lsof \|\| xxd | xprop, xwininfo, luck |
 
 
 ## Usage
@@ -27,17 +27,17 @@ more error-prone.
 | `swapwin j some_file.c` | file | → swap | → pid | → window  ◑ |
 | `swapwin j 1234` | | | pid | → window ◑  |
 
-If window is not found from pid, which happens on vim, we go:
+– *If window is not found from pid, which happens on vim, we go:*
 
 ◑  pid's open files → window titles with file names → window
 
 *If one specify file by name it is required that the swap file reside in same 
 directory.*
 
-Action is either
+---
 
-| option | Intended result |
-| -- | -- |
+| option | *Intended result* |
+| - | :- |
 | `j`| Jump to Workspace and raise window. (Default) |
 | `g`| Fetch Window if on other workspace and raise window. |
 | `p`| Only print information. |
